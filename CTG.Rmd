@@ -1,0 +1,415 @@
+---
+title: "Cardiotocography"
+author: "Aleksandra Załęska"
+date: "2023-01-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Zbiór zawiera dane zebrane w czasie badań KTG płodów, parametry te zostały przeanalizowane przez trzech doświadczonych położników, a następnie na podstawie tych parametrów, położnicy nadali jedną z trzech możliwych klas dla każdego płodu świadczącą o jego stanie (1 = stan normalny, 2 = stan podejrzany, 3 = patologia płodu). Dane te są zawarte w ostatniej kolumnie NSP. Dokonano także klasyfikacji płodu (od 1 do 10) na podstawie wzorca morfologicznego, dane te są zawarte w kolumnie CLASS. 
+Kolumna NSP jest zmienną kategoryczną o trzech poziomach i według mnie, jest ona główną kolumną modelowaną przez dane, żaś pozostałe kolumny dostarczają dodatkowych atrybutów danych.
+
+Przyjrzyjmy się bliżej naszemu zbiorowi. Ładujemy dane do analizy:
+
+```{r message = FALSE}
+library(readr)
+CTG <- read_csv("https://docs.google.com/spreadsheets/d/e/2PACX-1vSY8yoskQt0auIrvtbiu0oqdNF09DD8xCjA2rHTaSVqlmSGf_7heXlOT3-MtHkleiJ3ceD-H9ZSV35X/pub?gid=1248318734&single=true&output=csv")
+```
+
+#### Wartości brakujące
+
+Po przejrzeniu danych możemy zauważyć, że w pierwszym wierszu oraz 3 ostatnich występują brakujące dane. Możemy usunąć te wiersze:
+
+
+```{r}
+CTG <- CTG[-c(1,2128:2130),]
+```
+
+
+#### Zbędne dane
+
+Przeglądając zbiór danych możemy także zauważyć kolumy, które zawierają dane dla nas nieistotne takie jak nazwy plików, w których został zapisany wynik badania, daty badania itp., interesują nas zasadniczo tylko kolumny z parametrami otrzymanymi w czasie badania oraz klasyfikacją nadaną przez położników, czyli kolumny od LBE do NSP. Ponadto obie kolumny LBE i LB zawierają wyjściową wartość tętna płodu. Wartości te się powielają, wynika to z faktu iż, wartości zawarte w kolumnie LBE są pomiarami lekarza, natomiast wartości zawarte w kolumnie LB to pomiare generowane przez program. Możemy zatem pozostawić kolumnę LB, a kolumnę LBE usunąć. 
+
+```{r}
+CTG <- CTG[, -c(1:6)]
+```
+
+#### Kontrola danych
+
+Sprawdźmy jeszcze, czy nasze zmienne są odpowiedniego typu.
+
+```{r}
+str(CTG)
+```
+
+Wszystkie zmienne są typu numeric, zmienne Tendency, CLASS i NSP powinny być typu factor. Natomiast zmienne MSTV i MLTV są typu character, a powinny być typu numeric. Wynika to z faktu, iż zmienne MSTV i MLTV nie są całkowite, i użyto przecinka zamiast kropki. Zatem zanim zajmiemy się zmianą typu zmiennych, musimy zamienić przecinki na kropki w zmiennych MSTV i MLTV:
+
+```{r}
+library(stringr)
+```
+
+```{r}
+CTG$MSTV <- str_replace_all(CTG$MSTV, ",", ".")
+CTG$MLTV <- str_replace_all(CTG$MLTV, ",", ".")
+```
+
+Teraz zmieńmy typ zmiennych:
+
+```{r}
+CTG$NSP <- as.factor(CTG$NSP)
+CTG$Tendency <- as.factor(CTG$Tendency)
+CTG$CLASS <- as.factor(CTG$CLASS)
+CTG$MSTV <- as.numeric(CTG$MSTV)
+CTG$MLTV <- as.numeric(CTG$MLTV)
+```
+
+Możemy sprawdzić teraz czy wszystko się zgadza.
+
+```{r}
+str(CTG)
+```
+Wszystko jest już w porządku.
+
+
+#### Opis kolumn
+
+Mając już przygotowane dane do analizy, możemy przejść do opisu zawartości poszczególnych kolumn. 
+
+* LB zawiera wyjściowe wartości tętna płodu.\n
+* AC zawiera ilość przyśpieszeń na sekundę.\n
+* FM zawiera ilość ruchów płodu na sekundę.\n
+* UC zawiera liczbę skurczów macicy na sekundę.\n
+* DL zawiera liczba lekkich opóźnień na sekundę.\n
+* DS zawiera liczba poważnych opóźnień na sekundę.\n
+* DP zawiera liczba wydłużonych opóźnień na sekundę.\n
+* ASTV zawiera procent czasu z nieprawidłową zmiennością krótkookresową.\n
+* MSTV zawiera średnią wartość zmienności krótkookresowej.\n
+* ALTV zawiera procent czasu z nieprawidłową długookresową zmiennością.\n
+* MLTV zawiera średnią wartość zmienności długoterminowej.\n
+* Width zawiera szerokość histogramu FHR.\n
+* Min zawiera minimum histogramu FHR.\n
+* Max zawiera maksimum histogramu FHR.\n
+* Nmax zawiera liczbę szczytów histogramu.\n
+* Nzero zawiera liczbę zer histogramu.\n
+* Mode zawiera modę/dominantę histogramu.\n
+* Mean zawiera średnią histogramu.\n
+* Median zawiera medianę histogramu.\n
+* Variance zawiera wariancję histogramu.\n
+* Tendency zawiera tendencję histogramu (-1=asymetria lewostronna; 0=symetria; 1= asymetria prawostronna).\n
+* CLASS - kod klasy wzoru FHR (od 1 do 10).\n
+* NSP - kod klasy stanu płodu (1=normalny; 2=podejrzany; 3=patologia płodu).\n
+
+Możemy teraz przedstawić te poszczególne parametry z podziałem na stan płodu i porównać je ze sobą. W ten sposób będziemy mogli określić jakie parametry determinują stan płodu zagrażający życiu. Ale najpierw sprawdźmy jak dużo jest płodów w poszczególnych stanach i jak duży odsetek stanowią płody zagrożone.
+
+
+```{r}
+#ustalmy ramki danych dla tych trzech kategorii stanu płodu:
+normal_fetal_state <- subset(CTG, CTG$NSP == 1)
+suspect_fetal_state <- subset(CTG, CTG$NSP == 2)
+pathologic_fetal_state <- subset(CTG, CTG$NSP == 3)
+```
+
+```{r }
+#ilośc płodów w poszczególnych kategoriach
+num_of_normal_fetal <- nrow(normal_fetal_state)
+num_of_suspect_fetal <- nrow(suspect_fetal_state)
+num_of_pathologic_fetal <- nrow(pathologic_fetal_state)
+```
+
+```{r }
+barplot(c(num_of_normal_fetal, num_of_suspect_fetal,num_of_pathologic_fetal), names = c("Normalny", "Podejrzany", "Patologia płodu"), xlab = "Stan płodu", ylab = "Liczba przypadków", col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), main = "Odsetek płodów w zależności od stanu")
+text(0.7, (num_of_normal_fetal/2), paste( round((num_of_normal_fetal/nrow(CTG))*100),"%"), pos=3, cex=1.3)
+text(1.9, (num_of_suspect_fetal/4), paste( round((num_of_suspect_fetal/nrow(CTG))*100),"%"), pos=3, cex=1.3)
+text(3.1, (num_of_pathologic_fetal/500), paste( round((num_of_pathologic_fetal/nrow(CTG))*100),"%"), pos=3, cex=1.3)
+```
+
+Patrząc na powyższy wykres, możemy zauważyć, że odsetek płodów znajdujących się w stanie "podejrzany" lub "patologia płodu" jest dość duży. 
+
+Sprawdźmy zatem jak wygląda porównanie pozostałych parametrów dla poszczególnych stanów:
+
+```{r message=FALSE}
+library("vioplot")
+```
+
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$LB, suspect_fetal_state$LB, pathologic_fetal_state$LB, 
+        ylab = "Tętno płodu (uderzeń/minutę)",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu", 
+        cex.axis=0.45)
+
+vioplot(normal_fetal_state$AC, suspect_fetal_state$AC, pathologic_fetal_state$AC, 
+        ylab = "Liczba przyśpieszeń na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",           cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+vioplot(normal_fetal_state$FM, suspect_fetal_state$FM, pathologic_fetal_state$FM, 
+        ylab = "Liczba ruchów płodu na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu", 
+        cex.axis=0.45)
+boxplot(normal_fetal_state$UC, suspect_fetal_state$UC, pathologic_fetal_state$UC, 
+        ylab = "Liczba skurczów macicy na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$ASTV, suspect_fetal_state$ASTV, pathologic_fetal_state$ASTV, 
+        ylab = "Procent czasu z nieprawidłową zmiennością krótkookresową",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+vioplot(normal_fetal_state$MSTV, suspect_fetal_state$MSTV, pathologic_fetal_state$MSTV, 
+        ylab = "Średnia wartość zmienności krótkookresowej",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+```
+
+```{r }
+par(mfrow=c(1,2))
+vioplot(normal_fetal_state$ALTV, suspect_fetal_state$ALTV, pathologic_fetal_state$ALTV, 
+        ylab = "Procent czasu z nieprawidłową długookresową zmiennością",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+boxplot(normal_fetal_state$MLTV, suspect_fetal_state$MLTV, pathologic_fetal_state$MLTV, 
+        ylab = "Średnia wartość zmienności długoterminowej",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$DL, suspect_fetal_state$DL, pathologic_fetal_state$DL, 
+        ylab = "Liczba lekkich opóźnień na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+vioplot(normal_fetal_state$DS, suspect_fetal_state$DS, pathologic_fetal_state$DS, 
+        ylab = "Liczba poważnych opóźnień na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+vioplot(normal_fetal_state$DP, suspect_fetal_state$DP, pathologic_fetal_state$DP, 
+        ylab = "Liczba wydłużonych opóźnień na sekundę",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+boxplot(normal_fetal_state$Width, suspect_fetal_state$Width, pathologic_fetal_state$Width, 
+        ylab = "Szerokość histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$Min, suspect_fetal_state$Min, pathologic_fetal_state$Min, 
+        ylab = "Minimum histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+boxplot(normal_fetal_state$Max, suspect_fetal_state$Max, pathologic_fetal_state$Max, 
+        ylab = "Maksimum histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$Nmax, suspect_fetal_state$Nmax, pathologic_fetal_state$Nmax, 
+        ylab = "Liczba szczytów histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+vioplot(normal_fetal_state$Nzeros, suspect_fetal_state$Nzeros, pathologic_fetal_state$Nzeros, 
+        ylab = "Liczba zer histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$Mode, suspect_fetal_state$Mode, pathologic_fetal_state$Mode, 
+        ylab = "Moda histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+boxplot(normal_fetal_state$Mean, suspect_fetal_state$Mean, pathologic_fetal_state$Mean, 
+        ylab = "Średnia histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+
+```{r }
+par(mfrow=c(1,2))
+boxplot(normal_fetal_state$Median, suspect_fetal_state$Median, pathologic_fetal_state$Median, 
+        ylab = "Mediana histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+
+boxplot(normal_fetal_state$Variance, suspect_fetal_state$Variance, pathologic_fetal_state$Variance, 
+        ylab = "Wariancja histogramu",
+        names = c("Normalny", "Podejrzany", "Patologia płodu"),
+        col=c("darkcyan", "khaki2", "indianred"), border=c("deepskyblue4","gold2","maroon"), xlab = "Stan płodu",
+        cex.axis=0.45)
+```
+
+Analizując powyższy wykres, możemy zauważyć, że konkretne parametry przyjmują zupełnie inne wartości dla poszczególnych stanów płodu.
+
+
+## Model klasyfikacyjny
+
+Biorąc pod uwagę powyższe wyniki analizy, możemy spróbować stworzyć model klasyfikacyjny, który na podstawie pozostałych parametrów, będzie przewidywać klasę zmiennej NSP, czyli kategorię stanu płodu. 
+
+Do budowy naszego modelu, wykorzystamy algorytm Random Forest. 
+
+#### Las losowy (Random Forest)
+
+Jest to algorytm, który w pewnym sensie opiera się na konstrukcji drzew decyzyjnych. Pojedyńcze drzewo decyzyjne często nie jest zbyt dobrym modelem, o wiele lepszym rozwiązaniem jest budowa wielu drzew. Wtedy każde z drzew generuje jakieś progonozowane wartości, a następnie są one w pewien sposób łączone w jedną prognozę np. poprzez uśrednianie.
+Możemy odgórnie "narzucić' ilość tychże drzew w modelu poprzez funkcję `ntree= ` , jednak nie jest to konieczne, R domyślnie przyjmuje `ntree = 500`.
+
+
+```{r include=FALSE}
+# Instalowanie pakietu randomForest
+
+#install.packages("randomForest")  
+```
+
+
+```{r message=FALSE}
+# Ładowanie pakietu randomForest
+
+library(randomForest)
+```
+
+#### Podział danych
+
+Zbiór danych CTG musimy podzielić na dwie części: treningową i testową. Podziału dokonujemy w sposób losowy, dzieląc zbiór w proporcji 30:70. 
+
+```{r}
+  set.seed(0)
+  size <- nrow(CTG)
+  size_percent_train <- 0.70
+  subset_train <- sample(1:size, size_percent_train * size)
+  train <- CTG[subset_train, ]
+  test <- CTG[-subset_train, ]
+```
+
+Dopasujmy teraz nasz model do treningowego zestawu danych:
+
+```{r}
+model <- randomForest(x = train[-34], y = train$NSP)
+model
+```
+"OOB estimate of  error rate"  (błąd OOB (out-of-bag)) to średni błąd predykcji w każdej próbce treningowej. Prościej mówiąc: jest to odsetek wszystkich pomyłek (fałszywie pozytywnych i fałszywie negatywnych) wykonanych przez model w zbiorze treningowym.  
+
+Błąd klasyfikacji ("class.error") stanu płodu "normalny" wynosi 0.08%, dla stanu płodu "podejrzany" wynosi 6.5%, a dla stanu "patologia płodu" wynosi 0.7%. 
+
+Teraz możemy przewidzieć wynik dla testowego zestawu danych:
+
+```{r}
+y_pred <- predict(model, newdata = test[-34])
+```
+
+Tablica pomyłek w zbiorze testowym:
+
+```{r}
+confusion_mtx <- table(test$NSP, y_pred)
+confusion_mtx
+```
+```{r}
+OOB_test <- (confusion_mtx[2,1] + confusion_mtx[1,2]) / nrow(test)
+```
+
+Błąd OOB w zbiorze testowym wynosi:
+
+```{r}
+paste(round(OOB_test * 100, digits = 2), "%")
+```
+
+Zatem spośród 495 płodów w stanie normalnym, 490 zostało poprawnie sklasyfikowanych, natomiast 5 zostało błędnie zaklasyfikowanych jako podejrzane. Spośród 93 podejrzanych płodów, 90 zostało poprawnie sklasyfikowanych, a 3 został zaklasyfikowany jako normalne. 50 płodów w stanie "patologia" płodu zostało dobrze sklasyfikowanych.
+
+Co ważne, zdaje się, że nasz model unika pomyłek w klasyfikowaniu normalnego płodu jako patologicznego i na odwrót, co jest niezwykle istotne dla naszych rozważań.
+
+Stwórzmy teraz wykres naszego modelu:
+
+```{r}
+plot(model)
+```
+
+Widzimy, że poziom błędu stabilizuje się wraz z rosnącą liczbą drzew.
+
+Poniższe wartości prezentują nam to jak ważne są poszczególne zmienne:
+
+```{r}
+importance(model)
+```
+
+Najważniejszą zmienną jest zmienna CLASS, następnie SUSP. Pozostałe dość istotne zmienne to: MSTV, LD,ALTV, FS, ASTV, E.
+Przez określenie "najważniejsza zmienna" rozumiemy zmienną, która ma największy wpływ na predykcję zmiennej NSP. 
+Obrazuje to poniższy wykres:          
+
+```{r}
+# Variable importance plot
+varImpPlot(model, cex=0.5, pt.cex = 1, bg="maroon" )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
